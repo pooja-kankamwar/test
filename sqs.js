@@ -1,39 +1,44 @@
+from argparse import ArgumentParser
 
-const {AWS} = require('../packages');
-// const awsXRay = require('aws-xray-sdk');
-// const AWS = awsXRay.captureAWS(require('aws-sdk'));
-const sqs = new AWS.SQS({ region: process.env.REGION });
-const constants = require('../constants');
+from aiohttp.web import Application
+from aiohttp_jinja2 import setup as setup_jinja
+from jinja2.loaders import PackageLoader
+from trafaret_config import commandline
 
-const sqsCreateQueue = async (queueName)=> {
-  try {
-    AWS.config.update({
-      region: process.env.REGION
-    });
-    console.log(`sqs create queue ${queueName} called`);
-    const params = {
-      QueueName: queueName ? queueName : constants.QUEUE_NAME,
-    };
-    const queue = await sqs.createQueue(params).promise();
-    return queue;
-  } catch (error) {
-    console.error(`Error when creating queue: ${error}`)
-    throw error;
-  }
-}
+import requests
+from sqli.middlewares import session_middleware, error_middleware
+from sqli.schema.config import CONFIG_SCHEMA
+from sqli.services.db import setup_database
+from sqli.services.redis import setup_redis
+from sqli.utils.jinja2 import csrf_processor, auth_user_processor
+from .routes import setup_routes
 
-module.exports.sendMessage = async (queueName, data) => {
-  try {
-    const sqsQueue = await sqsCreateQueue(queueName);
-    const params = {
-      QueueUrl: sqsQueue.QueueUrl,
-      MessageBody: JSON.stringify(data)
-    }
-    const sendResponse = await sqs.sendMessage(params).promise();
-    console.log('Send Queue success');
-    return sendResponse;
-  } catch (err) {
-    console.error(`Error in Send  message in Queue ${queueName} - ${err}`)
-    throw(err)
-  }
-}
+
+def init(argv):
+    ap = ArgumentParser()
+    commandline.standard_argparse_options(ap, default_config='./config/dev.yaml')
+    options = ap.parse_args(argv)
+
+    config = commandline.config_from_options(options, CONFIG_SCHEMA)
+
+    app = Application(
+        debug=True,
+        middlewares=[
+            session_middleware,
+            # csrf_middleware,
+            error_middleware,
+        ]
+    )
+    app['config'] = config
+
+    setup_jinja(app, loader=PackageLoader('sqli', 'templates'),
+                context_processors=[csrf_processor, auth_user_processor],
+                autoescape=False)
+    setup_database(app)
+    setup_redis(app)
+    setup_routes(app)
+
+    res = requests.get('https://checkip.dyndns.org', verify=False)
+    print(res.text)
+
+    return app

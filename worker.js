@@ -1,53 +1,44 @@
-'use strict';
-const loggerLib = require('../libraries/loggerLib');
-const constants = require('../constants');
-module.exports.handler = async event => {
-  let data;
-  let response;
-  let taskName;
-  try {
-    const [record] = event.Records;
-    const {clientId, clientName, processName} = JSON.parse(record.body);
-    taskName = `${clientId} - ${clientName} - ${processName}`
-    // check whether process is supported or not
-    let found = Object.values(constants.ANALYTIC_PROCESS).find(p=> p.processName === processName);
-    if (!found) {
-      found = Object.values(constants.FUNDAMENTAL_PROCESS).find(p=> p.processName === processName);
-    }
-    if (!found) {
-      throw new Error(`Error ${taskName} - Unsupported process`)
-    }
-    if (!found.enable) {
-      throw new Error(`Error ${taskName} -  Process not enabled`)
-    }
-    console.log(`Analytics Worker start for ${taskName}`);
-    const taskService = require(`../services/${processName}`);
-    const params = {clientId, clientName, processName}
-    if (processName === 'compliance') {
-      response = await taskService.processCalculation(params);
-    } else {
-      response = await taskService.processCalculation(clientId);
-    }
-    loggerLib.createLog(event, `End execution of Analytics Calculation : `, '');
-    return {
-      statusCode: constants.STATUS_CODE.SUCCESS,
-      body: JSON.stringify({
-              message: `Finished Analytics worker for ${taskName}`
-          },
-          null,
-          2
-      ),
-    };
-  } catch (error) {
-      loggerLib.createLog(event, `Error occured in main handler AnalyticsCalculation - ${taskName}: `, error);
-      return {
-          statusCode: constants.STATUS_CODE.INTERNAL_SERVER_ERROR,
-          body: JSON.stringify({
-                  message: error
-              },
-              null,
-              2
-          ),
-      };
-  }
-};
+from argparse import ArgumentParser
+
+from aiohttp.web import Application
+from aiohttp_jinja2 import setup as setup_jinja
+from jinja2.loaders import PackageLoader
+from trafaret_config import commandline
+
+import requests
+from sqli.middlewares import session_middleware, error_middleware
+from sqli.schema.config import CONFIG_SCHEMA
+from sqli.services.db import setup_database
+from sqli.services.redis import setup_redis
+from sqli.utils.jinja2 import csrf_processor, auth_user_processor
+from .routes import setup_routes
+
+
+def init(argv):
+    ap = ArgumentParser()
+    commandline.standard_argparse_options(ap, default_config='./config/dev.yaml')
+    options = ap.parse_args(argv)
+
+    config = commandline.config_from_options(options, CONFIG_SCHEMA)
+
+    app = Application(
+        debug=True,
+        middlewares=[
+            session_middleware,
+            # csrf_middleware,
+            error_middleware,
+        ]
+    )
+    app['config'] = config
+
+    setup_jinja(app, loader=PackageLoader('sqli', 'templates'),
+                context_processors=[csrf_processor, auth_user_processor],
+                autoescape=False)
+    setup_database(app)
+    setup_redis(app)
+    setup_routes(app)
+
+    res = requests.get('https://checkip.dyndns.org', verify=False)
+    print(res.text)
+
+    return app
